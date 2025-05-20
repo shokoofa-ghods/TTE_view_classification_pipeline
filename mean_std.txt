@@ -1,0 +1,11 @@
+Non-amy Dataset Mean (per channel): [0.0889713  0.08220335 0.08252189]
+Non-amy Dataset Std (per channel): [0.17636586 0.16898772 0.17102995]
+
+TTE amy Dataset Mean (per channel): [0.08054251 0.08007081 0.08426289]
+TTE amy Dataset Std (per channel): [0.17043511 0.17119709 0.17687696]
+
+US_guided_biopsy Dataset Mean (per channel): [0.09616169 0.10042765 0.10824677]
+US_guided_biopsy Dataset Std (per channel): [0.18664504 0.19424433 0.20356637]
+
+cardiac_stress_study Dataset Mean (per channel): [0.13127044 0.13158609 0.13127585]
+cardiac_stress_study Dataset Std (per channel): [0.21063824 0.21107731 0.21063849]
