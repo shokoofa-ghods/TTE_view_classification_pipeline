@@ -1,0 +1,14 @@
+{
+    "origin": "/home/shokoo/EchoView/video_class/",
+    "train": "files/video_model_labels/train_label_original.csv",
+    "eval": "files/video_model_labels/val_label_original.csv",
+    "test": "files/video_model_labels/test_label_original.csv",
+    "verbose": true,
+    "plot": true,
+    "tensorboard": false,
+    "lr": 0.001,
+    "epochs": 50,
+    "batch_size": 32,
+    "loss_limit": 3,
+    "multiframe": false
+}
