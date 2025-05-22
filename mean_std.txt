@@ -9,3 +9,9 @@ US_guided_biopsy Dataset Std (per channel): [0.18664504 0.19424433 0.20356637]
 
 cardiac_stress_study Dataset Mean (per channel): [0.13127044 0.13158609 0.13127585]
 cardiac_stress_study Dataset Std (per channel): [0.21063824 0.21107731 0.21063849]
+
+average of Non-amy and TTE Dataset Mean (per channel): array([0.0847569 , 0.08113708, 0.08339239])
+average of Non-amy and TTE Dataset Std (per channel): array([0.17340048, 0.17009241, 0.17395345])
+
+average of 4 Datasets Mean (per channel): array([0.09923648, 0.09857197, 0.10157685])
+average of 4 Datasets Std (per channel): array([0.18602106, 0.18637661, 0.19052794])
