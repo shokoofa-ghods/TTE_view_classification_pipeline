@@ -2,19 +2,20 @@
 Custom Dataset module
 """
 
-import glob
 import os
 from typing import Callable
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from torchvision.transforms import ToPILImage, PILToTensor
+import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
 from PIL import Image
-import time
+import ast
 from utils import log
+import cv2
 
-from data.transforms import ApplySameTransformToAllFrames
+from data.transforms import video_aug_pipeline
 
 VALID_LABELS = {'PLAX': 0,
                 'PSAX-ves': 1,
@@ -35,134 +36,143 @@ class CustomDataset(Dataset):
     Custom dataset implementation
     """
     def __init__(self,
-                 paths,
-                 labels,
-                 transform:Callable[[Image.Image | torch.Tensor], Image.Image | torch.Tensor],
-                 original_address:str,
-                 frames:int,
-                    frame_select:Callable[[torch.Tensor, int], torch.Tensor]=
-                        lambda t, m: torch.stack([t[len(t) * i // m] for i in range(m)]),
-                 training_transform:Callable[[torch.Tensor],
-                                             list[torch.Tensor]]
-                                             | None=None,
-                 normalize:bool=False):
+                csv_info,
+                root_dir,
+                data_mean = 0.5,
+                data_std = 0.5,
+                use_npy = False,
+                transform = None,
+                remove_ecg=True, 
+                remove_static=True,
+                #  :Callable[[Image.Image | torch.Tensor], Image.Image | torch.Tensor],
+                #  frames:int,
+                    # frame_select:Callable[[torch.Tensor, int], torch.Tensor]=
+                    #     lambda t, m: torch.stack([t[len(t) * i // m] for i in range(m)]),
+                ):
         """
         frames must be set to the number of frames to use per sample
         frame_select(frames, output_size) MUST return a tensor with 'outputsize' frames
         """
+        self.meta = csv_info
+        self.root_dir = root_dir
+        self.data_mean = data_mean
+        self.data_std = data_std
+        self.use_npy = use_npy
         self.transform = transform
-        self.training_transform = training_transform
-        self.original_address = original_address
-        self.frames = frames
+        self.remove_ecg = remove_ecg
+        self.remove_static = remove_static
         self.labels_require_aug = [3, 4, 10, 6, 7]
-        self.frame_select = frame_select
-        if normalize:
-            distrib:dict[str, list[str]] = {i:[] for i in VALID_LABELS}
-            for i, path in enumerate(paths):
-                distrib[labels[i]].append(path)
-            max_len = max([len(distrib[l]) for l in VALID_LABELS])
-            self.paths:list[str] = []
-            self.labels:list[str] = []
-            self.augment:list[bool] = []
-            for i in range(max_len):
-                for label, l_paths in distrib.items():
-                    self.paths.append(l_paths[i % len(l_paths)])
-                    self.labels.append(label)
-                    self.augment.append(i >= len(l_paths))
-        else:
-            self.paths = paths
-            self.labels = labels
-            self.augment = [False for _ in self.paths]
+  
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.meta)
 
-    def preprocessing(self, image_array:torch.Tensor, k:int=100) -> torch.Tensor:
+    def remove_static_background(self, images, k:int=5)-> torch.Tensor:
         """
-        Preprocess a video (image_array)
+        Preprocess a video (images)
         
         Args:
-            image_array (Tensor shape:(slices, channels, height, width)):
+            images (Tensor shape:(slices, channels, height, width)):
                 The video to process
-            k (int optional default=100):
+            k (int optional default=5):
                 The max number of steps
         Returns:
             The video with unchanged voxels set to 0
         """
+        image_array = torch.stack([TF.to_tensor(img) for img in images])
+        if image_array.max() > 1.0:
+            image_array /= 255.0
+
         slices, ch, height, width = image_array.shape
-
         mask = torch.zeros((ch, height, width), dtype=torch.uint8)
-        steps = min(k, slices)
+        steps = min(5, slices)
         for i in range(steps - 1):
-            mask[image_array[i, :, :, :] != image_array[i + 1, :, :, :]] = 1
-
-        output = image_array * mask
+            mask |= (image_array[i] != image_array[i + 1])  # element-wise comparison
+        output = image_array * mask  # static pixels become zero
         return output
+    
 
-    def _address(self, index:int):
+    def _address(self, images):
         """
-        Get the address of the index
+        Remove the ECG signal using hsv value of green line
+        Args:
+            images (Tensor shape:(slices, channels, height, width)):
+                the video frames to process
+        Returns:
+            The video frames with ecg signal erased
         """
-        return os.path.join(self.original_address, 'Dataset', self.paths[index])
+        output = []
+        for img in images:
+            hsv = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2HSV)
+            mask = cv2.inRange(hsv, (40, 40, 40), (80, 255, 255))
+            img[mask > 0] = 0
+            output.append(img)
+        return output
+    
 
     def _index(self, name:str) -> int:
         """
         Get the index from a path string
         """
         return int(os.path.basename(name).split('_')[-1].split('.')[0])
-
+    
+    def ensure_tensor_rgb(self, image):
+        """
+        Ensure image type to be tensor
+        Args:
+            image (Numpy or Tensor or Image type)
+        Returns:
+            image (Tensor type)
+        """
+        if isinstance(image, np.ndarray):
+            image = torch.tensor(image).float() / 255.0
+            image = image.permute(2, 0, 1)  # [H, W, C] → [C, H, W]
+        elif isinstance(image, Image.Image):
+            image = TF.to_tensor(image)
+        elif isinstance(image, torch.Tensor):
+            if image.max() > 1.0:
+                image = image / 255.0
+        return image
+    
     def __getitem__(self, index):
-        start = time.time()
-        filepath = self._address(index)
-        label = self.labels[index]
-        label = torch.tensor([VALID_LABELS[str(label)]])
+        row = self.meta.iloc[index]
+        path = row['path']
+        case_path = os.path.basename(path)
+        frame_ids = ast.literal_eval(row['frame'])
+        label = torch.tensor(VALID_LABELS[row['label']], dtype=torch.long)
 
-        # sort the image in based on the order of the slices saved in the folder
-        # imgs_paths = sorted(glob.glob(os.path.join(filepath, '*')),
-        #                     key=self._index)
-        addresses = glob.glob(os.path.join(filepath, '*'))
+        # Load images
+        images = []
+        for frame_id in frame_ids:
+            img_path = os.path.join(self.root_dir, path, f"{case_path}_{frame_id}.png")
+            image = Image.open(img_path).convert("RGB")
+            images.append(np.array(image))  # Save as numpy arrays for preprocessing
 
-        imgs_paths = sorted(addresses,
-                            key=self._index)
+        # ECG Removal
+        if self.remove_ecg:
+            images = self.remove_ecg_line(images)
 
-        images_list = []
-        for img_path in imgs_paths:
-            image = Image.open(img_path)
-            if self.transform:
-                image = self.transform(image)
-            # if self.augment[index]:
-            #     # Do an augmentation of the image
-            #     if isinstance(image, Image.Image):
-            #         w, h = image.width, image.height
-            #     elif isinstance(image, torch.Tensor):
-            #         w, h = image.size(2), image.size(1)
-            #     transform = ApplySameTransformToAllFrames()
-            #     image = transform.apply_random_transforms(image,
-            #                                               transform.get_random_parameters(),
-            #                                               out_size=(h, w))
-            # if isinstance(image, Image.Image):
-            #     image = PILToTensor()(image)
-            images_list.append(image)
+        # Background Removal
+        if self.remove_static:
+            images = self.remove_static_background(images)
 
+        # Convert to tensor: [T, C, H, W]
+        frames_tensor = torch.stack([self.ensure_tensor_rgb(img) for img in images])
 
-        # creating a 3D tensor image
-        sequence_tensor = torch.stack(images_list)
-        # chunks = self.sliding_window(sequence_tensor)
+        # Apply optional transforms (assumed batch-safe)
+        if self.transform is not None:
+            frames_tensor = self.transform(frames_tensor)
 
-        preprocessed_d = self.preprocessing(sequence_tensor)
+        # Grayscale, Resize and Normalize
+        processed_frames = []
+        for frame in frames_tensor:
+            frame = transforms.Grayscale(num_output_channels=3)(frame)
+            frame = TF.resize(frame, size=[224, 224])
+            frame = TF.normalize(frame, mean=self.data_mean, std=self.data_std)
+            processed_frames.append(frame)
+            
+        frames_tensor = torch.stack(processed_frames)
 
 
-        # video augmentation on all slices
-        if self.training_transform is not None:
-            # and label in self.labels_require_aug:
-            pil_images:list[Image.Image] = [ToPILImage()(image)
-                                            for image in preprocessed_d] # type: ignore
-            preprocessed_d = np.stack(pil_images) # type: ignore
-            # train_transform = ApplySameTransformToAllFrames()
-            preprocessed_d = self.training_transform(preprocessed_d)
-            preprocessed_d = torch.stack(preprocessed_d)
-        # Return the image and label as tensors
-
-        # log(f"Load time: {time.time() - start:.4f}s")
-        return self.frame_select(preprocessed_d, self.frames), label
+        return frames_tensor, label
 
